@@ -219,16 +219,22 @@
                 });
             }, []);
 
+            // 本地儲存：只在非 Firebase 模式下，notes 變動時才寫入
             useEffect(() => {
                 if (!isFirebaseConfigured) {
                     localStorage.setItem('prompt-keep-notes-local', JSON.stringify(notes));
-                    return;
                 }
+            }, [notes]);
+
+            // Firebase 監聽：只執行一次，靠 onSnapshot 保持即時同步
+            useEffect(() => {
+                if (!isFirebaseConfigured) return;
                 setIsSyncing(true);
+                let unsubscribeDb = null;
                 const unsubscribeAuth = auth.onAuthStateChanged((currentUser) => {
                     if (currentUser) {
                         setUser(currentUser);
-                        const unsubscribeDb = db.collection('users').doc(currentUser.uid).collection('notes')
+                        unsubscribeDb = db.collection('users').doc(currentUser.uid).collection('notes')
                             .onSnapshot((snapshot) => {
                                 const fetched = [];
                                 snapshot.forEach(doc => fetched.push({ id: doc.id, ...doc.data() }));
@@ -236,13 +242,15 @@
                                 setNotes(fetched);
                                 setIsSyncing(false);
                             }, (err) => { console.error(err); setIsSyncing(false); });
-                        return () => unsubscribeDb();
                     } else {
                         auth.signInAnonymously().catch(err => { console.error(err); setIsSyncing(false); });
                     }
                 });
-                return () => unsubscribeAuth();
-            }, [isFirebaseConfigured, notes]);
+                return () => {
+                    unsubscribeAuth();
+                    if (unsubscribeDb) unsubscribeDb();
+                };
+            }, []);
 
             const handleInstallClick = async () => {
                 if (!deferredPrompt) return;
