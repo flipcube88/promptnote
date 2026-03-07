@@ -67,7 +67,7 @@
 
   <!-- PWA 設定 -->
   <link rel="manifest" href="/manifest.json">
-  <meta name="theme-color" content="#09ecc6">
+  <meta name="theme-color" content="#1cfdb2">
 </head>
 <body class="bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 font-sans antialiased selection:bg-blue-200 dark:selection:bg-blue-900 transition-colors duration-200">
     <div id="root"></div>
@@ -422,7 +422,7 @@
   <!-- Firebase & PWA Service Worker -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-    import { getFirestore } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+    import { getFirestore, collection, addDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
     import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 
     // 1. 初始化 Firebase
@@ -440,10 +440,19 @@
     const auth = getAuth(app);
     window.db = db; // 掛載到 window 方便你嘅 code 呼叫
 
-    // 2. 自動隱形登入 (確保 Database 安全，阻擋街外 bot)
+    // 2. 自動隱形登入 (確保 Database 安全)
     signInAnonymously(auth).catch(err => console.error("Auth 失敗:", err));
 
-    // 3. 註冊 Service Worker
+    // 3. 提供極簡 Save Function 畀你嘅原生 HTML 呼叫
+    window.saveDataToFirestore = async (colName, data) => {
+      // 確保完成咗隱形登入先寫入
+      if (!auth.currentUser) {
+        await signInAnonymously(auth);
+      }
+      return addDoc(collection(db, colName), data);
+    };
+
+    // 4. 註冊 Service Worker
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
         navigator.serviceWorker.register('/sw.js')
