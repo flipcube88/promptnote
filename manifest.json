@@ -1,9 +1,10 @@
- note",
+{
+  "name": "promptnote",
   "short_name": "myprompt",
   "start_url": ".",
   "display": "standalone",
   "background_color": "#ffffff",
-  "theme_color": "#09ecc6",
+  "theme_color": "#1cfdb2",
   "icons": [
     {
       "src": "icon-192.png",
