@@ -76,12 +76,12 @@
         const { useState, useEffect, useRef } = React;
 
         const firebaseConfig = {
-            apiKey: "你的_API_KEY",
-            authDomain: "你的_PROJECT_ID.firebaseapp.com",
-            projectId: "你的_PROJECT_ID",
-            storageBucket: "你的_PROJECT_ID.appspot.com",
-            messagingSenderId: "你的_SENDER_ID",
-            appId: "你的_APP_ID"
+            apiKey: "AIzaSyAmtTXFjBXLI_6oJ7ytOIm_hh772m8XKz8",
+            authDomain: "copy-prompt.firebaseapp.com",
+            projectId: "copy-prompt",
+            storageBucket: "copy-prompt.firebasestorage.app",
+            messagingSenderId: "364332118974",
+            appId: "1:364332118974:web:6ebcb3fafc8c5b8e5bffef"
         };
         
         let app, auth, db;
@@ -419,40 +419,8 @@
         root.render(<App />);
     </script>
 
-  <!-- Firebase & PWA Service Worker -->
-  <script type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-    import { getFirestore, collection, addDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-    import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-
-    // 1. 初始化 Firebase
-    const firebaseConfig = {
-        apiKey: "AIzaSyAmtTXFjBXLI_6oJ7ytOIm_hh772m8XKz8",
-        authDomain: "copy-prompt.firebaseapp.com",
-        projectId: "copy-prompt",
-        storageBucket: "copy-prompt.firebasestorage.app",
-        messagingSenderId: "364332118974",
-        appId: "1:364332118974:web:6ebcb3fafc8c5b8e5bffef",
-        measurementId: "G-RP2QXCZDFZ"
-      };
-    const app = initializeApp(firebaseConfig);
-    const db = getFirestore(app);
-    const auth = getAuth(app);
-    window.db = db; // 掛載到 window 方便你嘅 code 呼叫
-
-    // 2. 自動隱形登入 (確保 Database 安全)
-    signInAnonymously(auth).catch(err => console.error("Auth 失敗:", err));
-
-    // 3. 提供極簡 Save Function 畀你嘅原生 HTML 呼叫
-    window.saveDataToFirestore = async (colName, data) => {
-      // 確保完成咗隱形登入先寫入
-      if (!auth.currentUser) {
-        await signInAnonymously(auth);
-      }
-      return addDoc(collection(db, colName), data);
-    };
-
-    // 4. 註冊 Service Worker
+  <!-- PWA Service Worker -->
+  <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
         navigator.serviceWorker.register('/sw.js')
