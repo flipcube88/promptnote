@@ -1,0 +1,818 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Prompt Keep</title>
+    <meta name="theme-color" content="#2563eb">
+    <meta name="description" content="你的個人 Prompt 與程式碼片段管理工具">
+
+    <script>
+      if (localStorage.getItem('prompt-keep-theme') === 'dark' || (!('prompt-keep-theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+        document.documentElement.classList.add('dark');
+      }
+    </script>
+
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>tailwind.config = { darkMode: 'class' };</script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore-compat.js"></script>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+    <style>
+        * { box-sizing: border-box; }
+        body { font-family: 'Plus Jakarta Sans', sans-serif; }
+        code, pre, .mono { font-family: 'IBM Plex Mono', monospace; }
+
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
+        .dark ::-webkit-scrollbar-thumb { background: #374151; }
+        .dark ::-webkit-scrollbar-thumb:hover { background: #4b5563; }
+
+        .note-card { transition: transform 0.15s ease, box-shadow 0.15s ease; }
+        .note-card:hover { transform: translateY(-2px); }
+        .note-card.dragging { opacity: 0.4; transform: rotate(1.5deg) scale(0.97); }
+        .note-card.drag-over { box-shadow: 0 0 0 2px #3b82f6, 0 8px 24px rgba(59,130,246,0.2); }
+
+        .code-fade::after {
+            content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 48px;
+            background: linear-gradient(to top, var(--fade-color, #1f2937), transparent);
+            pointer-events: none;
+        }
+
+        @keyframes slideUp {
+            from { opacity: 0; transform: translateY(16px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        .animate-slide-up { animation: slideUp 0.22s ease forwards; }
+        .animate-fade-in { animation: fadeIn 0.18s ease forwards; }
+
+        .tag-pill {
+            display: inline-flex; align-items: center; gap: 4px;
+            padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600;
+            letter-spacing: 0.02em; white-space: nowrap;
+        }
+
+        /* Mobile bottom sheet */
+        .bottom-sheet {
+            position: fixed; bottom: 0; left: 0; right: 0; z-index: 60;
+            background: white; border-radius: 20px 20px 0 0;
+            box-shadow: 0 -8px 40px rgba(0,0,0,0.15);
+            transform: translateY(100%);
+            transition: transform 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+        }
+        .dark .bottom-sheet { background: #1f2937; }
+        .bottom-sheet.open { transform: translateY(0); }
+
+        .pin-icon { transition: transform 0.2s ease; }
+        .pin-icon.pinned { transform: rotate(-45deg); color: #f59e0b; }
+
+        /* Compose area focus ring */
+        .compose-box:focus-within { box-shadow: 0 0 0 2px #3b82f6, 0 4px 20px rgba(59,130,246,0.15); }
+    </style>
+</head>
+<body class="bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 antialiased selection:bg-blue-200 dark:selection:bg-blue-900/50">
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useRef, useMemo, useCallback } = React;
+
+// ─── Firebase ────────────────────────────────────────────────────────────────
+const firebaseConfig = {
+    apiKey: "AIzaSyAmtTXFjBXLI_6oJ7ytOIm_hh772m8XKz8",
+    authDomain: "copy-prompt.firebaseapp.com",
+    projectId: "copy-prompt",
+    storageBucket: "copy-prompt.firebasestorage.app",
+    messagingSenderId: "364332118974",
+    appId: "1:364332118974:web:6ebcb3fafc8c5b8e5bffef"
+};
+let auth, db;
+const isFirebaseConfigured = firebaseConfig.apiKey && firebaseConfig.apiKey !== "你的_API_KEY";
+if (isFirebaseConfigured) {
+    firebase.initializeApp(firebaseConfig);
+    auth = firebase.auth();
+    db = firebase.firestore();
+}
+
+// ─── Constants ───────────────────────────────────────────────────────────────
+const COLORS = [
+    { id: 'default', light: '#ffffff', dark: '#1f2937' },
+    { id: 'red',     light: '#fde8e8', dark: '#5c2b29' },
+    { id: 'orange',  light: '#fef0d9', dark: '#614a19' },
+    { id: 'yellow',  light: '#fefde8', dark: '#635d19' },
+    { id: 'green',   light: '#e8f9e8', dark: '#1e3d20' },
+    { id: 'teal',    light: '#e0faf5', dark: '#16504b' },
+    { id: 'blue',    light: '#e8f4fd', dark: '#1e3a5f' },
+    { id: 'purple',  light: '#f0e8fd', dark: '#3b1f5e' },
+    { id: 'pink',    light: '#fde8f4', dark: '#5b2245' },
+    { id: 'brown',   light: '#f4ede4', dark: '#442f19' },
+    { id: 'gray',    light: '#f3f4f6', dark: '#2d3748' },
+];
+
+const TAG_COLORS = [
+    { bg: '#dbeafe', text: '#1d4ed8', darkBg: '#1e3a5f', darkText: '#93c5fd' },
+    { bg: '#d1fae5', text: '#065f46', darkBg: '#064e3b', darkText: '#6ee7b7' },
+    { bg: '#fce7f3', text: '#9d174d', darkBg: '#500724', darkText: '#f9a8d4' },
+    { bg: '#ede9fe', text: '#5b21b6', darkBg: '#2e1065', darkText: '#c4b5fd' },
+    { bg: '#ffedd5', text: '#9a3412', darkBg: '#431407', darkText: '#fdba74' },
+    { bg: '#ccfbf1', text: '#0f766e', darkBg: '#042f2e', darkText: '#5eead4' },
+];
+
+// ─── Utilities ────────────────────────────────────────────────────────────────
+const getTagColor = (tag, isDark) => {
+    let hash = 0;
+    for (let i = 0; i < tag.length; i++) hash = tag.charCodeAt(i) + ((hash << 5) - hash);
+    const c = TAG_COLORS[Math.abs(hash) % TAG_COLORS.length];
+    return isDark
+        ? { backgroundColor: c.darkBg, color: c.darkText }
+        : { backgroundColor: c.bg, color: c.text };
+};
+
+const getBgColor = (colorId, isDark) => {
+    const c = COLORS.find(x => x.id === colorId) || COLORS[0];
+    return isDark ? c.dark : c.light;
+};
+
+// ─── Icon Component ───────────────────────────────────────────────────────────
+const iconCache = {};
+const Icon = React.memo(({ name, size = 20, className = '' }) => {
+    const ref = useRef(null);
+    useEffect(() => {
+        if (!ref.current || !lucide.icons[name]) return;
+        ref.current.innerHTML = '';
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('width', size);
+        svg.setAttribute('height', size);
+        svg.setAttribute('viewBox', '0 0 24 24');
+        svg.setAttribute('fill', 'none');
+        svg.setAttribute('stroke', 'currentColor');
+        svg.setAttribute('stroke-width', '2');
+        svg.setAttribute('stroke-linecap', 'round');
+        svg.setAttribute('stroke-linejoin', 'round');
+        if (className) svg.setAttribute('class', className);
+        const [defaultAttrs, children] = lucide.icons[name];
+        children.forEach(([tag, attrs]) => {
+            const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+            Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
+            svg.appendChild(el);
+        });
+        ref.current.appendChild(svg);
+    }, [name, size, className]);
+    return <span ref={ref} style={{ display: 'contents', lineHeight: 0 }} />;
+});
+
+// ─── CodeBlock ────────────────────────────────────────────────────────────────
+const CodeBlock = React.memo(({ code, isPreview, fadeBg }) => {
+    const [copied, setCopied] = useState(false);
+    const copy = useCallback((e) => {
+        e.stopPropagation();
+        const doCopy = () => { setCopied(true); setTimeout(() => setCopied(false), 2000); };
+        if (navigator.clipboard) navigator.clipboard.writeText(code).then(doCopy);
+        else {
+            const t = document.createElement('textarea');
+            t.value = code; t.style.position = 'fixed'; t.style.left = '-9999px';
+            document.body.appendChild(t); t.select();
+            try { document.execCommand('copy'); doCopy(); } catch(_) {}
+            document.body.removeChild(t);
+        }
+    }, [code]);
+
+    return (
+        <div className="relative rounded-lg my-2 overflow-hidden border border-gray-700/50" style={{ background: '#0f172a' }} onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-center px-3 py-1.5 border-b border-gray-700/60" style={{ background: '#1e293b' }}>
+                <span className="mono text-xs text-gray-400 font-medium tracking-wide">CODE</span>
+                <button onClick={copy} className="flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors"
+                    style={{ color: copied ? '#4ade80' : '#94a3b8', background: copied ? 'rgba(74,222,128,0.1)' : 'transparent' }}>
+                    <Icon name={copied ? 'Check' : 'Copy'} size={12} />
+                    {copied ? '已複製' : '複製'}
+                </button>
+            </div>
+            <div className={`p-3 text-sm text-gray-100 mono leading-relaxed relative ${isPreview ? 'max-h-28 overflow-hidden code-fade' : 'overflow-x-auto'}`}
+                 style={isPreview ? { '--fade-color': '#0f172a' } : {}}>
+                <pre><code className="whitespace-pre-wrap break-words">{code}</code></pre>
+            </div>
+        </div>
+    );
+});
+
+// ─── Content Parser ───────────────────────────────────────────────────────────
+const parseContent = (text, isPreview = false) => {
+    if (!text) return null;
+    return text.split(/```/).map((part, i) => {
+        if (i % 2 !== 0) {
+            const nl = part.indexOf('\n');
+            const code = (nl !== -1 && nl < 20 && /^[a-zA-Z0-9_+-]*$/.test(part.slice(0, nl).trim()))
+                ? part.slice(nl + 1).trim() : part.trim();
+            return <CodeBlock key={i} code={code} isPreview={isPreview} />;
+        }
+        return <span key={i} className="whitespace-pre-wrap break-words leading-relaxed">{part}</span>;
+    });
+};
+
+// ─── Tag Input ────────────────────────────────────────────────────────────────
+const TagInput = ({ tags, onChange, isDark, allTags }) => {
+    const [input, setInput] = useState('');
+    const [showSuggestions, setShowSuggestions] = useState(false);
+    const suggestions = allTags.filter(t => t.toLowerCase().includes(input.toLowerCase()) && !tags.includes(t));
+
+    const addTag = (tag) => {
+        const clean = tag.trim().replace(/[#\s]+/g, '').toLowerCase();
+        if (clean && !tags.includes(clean)) onChange([...tags, clean]);
+        setInput(''); setShowSuggestions(false);
+    };
+    const removeTag = (tag) => onChange(tags.filter(t => t !== tag));
+    const handleKey = (e) => {
+        if ((e.key === 'Enter' || e.key === ',') && input.trim()) { e.preventDefault(); addTag(input); }
+        if (e.key === 'Backspace' && !input && tags.length) removeTag(tags[tags.length - 1]);
+    };
+
+    return (
+        <div className="relative">
+            <div className="flex flex-wrap gap-1.5 items-center">
+                {tags.map(tag => (
+                    <span key={tag} className="tag-pill" style={getTagColor(tag, isDark)}>
+                        #{tag}
+                        <button onClick={() => removeTag(tag)} className="ml-0.5 opacity-60 hover:opacity-100">
+                            <Icon name="X" size={10} />
+                        </button>
+                    </span>
+                ))}
+                <input
+                    value={input}
+                    onChange={e => { setInput(e.target.value); setShowSuggestions(true); }}
+                    onKeyDown={handleKey}
+                    onFocus={() => setShowSuggestions(true)}
+                    onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+                    placeholder={tags.length ? '' : '加入標籤…'}
+                    className="bg-transparent outline-none text-xs w-24 text-gray-500 dark:text-gray-400 placeholder-gray-400"
+                />
+            </div>
+            {showSuggestions && suggestions.length > 0 && (
+                <div className="absolute top-full left-0 mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-30 py-1 min-w-32">
+                    {suggestions.slice(0, 6).map(t => (
+                        <button key={t} onClick={() => addTag(t)}
+                            className="w-full text-left px-3 py-1.5 text-xs hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
+                            <span className="tag-pill" style={getTagColor(t, isDark)}>#{t}</span>
+                        </button>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+};
+
+// ─── Note Card ────────────────────────────────────────────────────────────────
+const NoteCard = ({ note, isDark, onOpen, onDelete, onTogglePin, onDragStart, onDragOver, onDrop, isDragging, isDragOver }) => {
+    const bg = getBgColor(note.colorId || 'default', isDark);
+    const isDefault = (note.colorId || 'default') === 'default';
+
+    return (
+        <div
+            className={`note-card break-inside-avoid mb-4 rounded-2xl overflow-hidden cursor-pointer relative group border
+                ${isDragging ? 'dragging' : ''} ${isDragOver ? 'drag-over' : ''}
+                ${isDefault ? 'border-gray-200 dark:border-gray-700' : 'border-transparent'}`}
+            style={{ backgroundColor: bg, boxShadow: isDragOver ? undefined : '0 1px 4px rgba(0,0,0,0.06)' }}
+            onClick={() => onOpen(note)}
+            draggable
+            onDragStart={() => onDragStart(note.id)}
+            onDragOver={e => { e.preventDefault(); onDragOver(note.id); }}
+            onDrop={() => onDrop(note.id)}
+        >
+            {/* Pin badge */}
+            {note.pinned && (
+                <div className="absolute top-3 right-3 z-10">
+                    <span className="flex items-center justify-center w-6 h-6 rounded-full bg-amber-400/20 dark:bg-amber-500/20">
+                        <Icon name="Pin" size={12} className="text-amber-500" />
+                    </span>
+                </div>
+            )}
+
+            <div className="p-4 max-h-[480px] overflow-hidden relative">
+                {note.title && <h3 className="font-bold text-base mb-2 text-gray-900 dark:text-gray-100 pr-8 leading-snug">{note.title}</h3>}
+                {note.tags?.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mb-2">
+                        {note.tags.map(t => <span key={t} className="tag-pill" style={getTagColor(t, isDark)}>#{t}</span>)}
+                    </div>
+                )}
+                <div className="text-sm text-gray-700 dark:text-gray-300">{parseContent(note.content, true)}</div>
+                <div className="absolute bottom-0 left-0 right-0 h-10 pointer-events-none"
+                     style={{ background: `linear-gradient(to top, ${bg}, transparent)` }} />
+            </div>
+
+            {/* Hover actions */}
+            <div className="opacity-0 group-hover:opacity-100 absolute bottom-2 right-2 flex gap-1 transition-opacity animate-fade-in">
+                <button onClick={e => { e.stopPropagation(); onTogglePin(note.id); }}
+                    className="p-1.5 rounded-full backdrop-blur-sm transition-colors text-gray-500 hover:text-amber-500"
+                    style={{ background: `${bg}cc` }}>
+                    <Icon name="Pin" size={14} className={note.pinned ? 'text-amber-500' : ''} />
+                </button>
+                <button onClick={e => { e.stopPropagation(); onDelete(note.id); }}
+                    className="p-1.5 rounded-full backdrop-blur-sm transition-colors text-gray-500 hover:text-red-500"
+                    style={{ background: `${bg}cc` }}>
+                    <Icon name="Trash2" size={14} />
+                </button>
+            </div>
+        </div>
+    );
+};
+
+// ─── Color Palette ────────────────────────────────────────────────────────────
+const ColorPalette = ({ selected, onChange, isDark }) => (
+    <div className="flex flex-wrap gap-1.5 p-2">
+        {COLORS.map(c => (
+            <button key={c.id} onClick={() => onChange(c.id)}
+                className={`w-6 h-6 rounded-full border-2 transition-transform hover:scale-110 ${selected === c.id ? 'border-blue-500 scale-110' : 'border-gray-300 dark:border-gray-600'}`}
+                style={{ backgroundColor: isDark ? c.dark : c.light }}
+            />
+        ))}
+    </div>
+);
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+const App = () => {
+    const [isDark, setIsDark] = useState(() => document.documentElement.classList.contains('dark'));
+    const [notes, setNotes] = useState(() => {
+        try { const s = localStorage.getItem('prompt-keep-notes-local'); if (s) return JSON.parse(s); } catch(_) {}
+        return [{
+            id: '1', title: '歡迎使用 Prompt Keep', colorId: 'green', pinned: true, tags: ['教學'],
+            content: '功能介紹：\n• 📌 置頂筆記\n• 🏷️ Tag 分類\n• ✨ 拖拉排序\n\n```javascript\nconsole.log("Hello, Prompt Keep!");\n```',
+            timestamp: Date.now(), order: 0
+        }];
+    });
+
+    const [user, setUser] = useState(null);
+    const [isSyncing, setIsSyncing] = useState(false);
+
+    // Compose state
+    const [isComposing, setIsComposing] = useState(false);
+    const [newTitle, setNewTitle] = useState('');
+    const [newContent, setNewContent] = useState('');
+    const [newColorId, setNewColorId] = useState('default');
+    const [newTags, setNewTags] = useState([]);
+    const [showNewPalette, setShowNewPalette] = useState(false);
+
+    // Filter state
+    const [searchQuery, setSearchQuery] = useState('');
+    const [activeTag, setActiveTag] = useState(null);
+
+    // Modal state
+    const [activeNote, setActiveNote] = useState(null);
+    const [isEditing, setIsEditing] = useState(false);
+    const [showModalPalette, setShowModalPalette] = useState(false);
+
+    // Drag state
+    const dragId = useRef(null);
+    const dragOverId = useRef(null);
+    const [dragState, setDragState] = useState({ dragging: null, over: null });
+
+    // Mobile bottom sheet
+    const [sheetOpen, setSheetOpen] = useState(false);
+
+    const textareaRef = useRef(null);
+
+    // Dark mode
+    const toggleDark = () => {
+        const next = !isDark;
+        document.documentElement.classList.toggle('dark', next);
+        localStorage.setItem('prompt-keep-theme', next ? 'dark' : 'light');
+        setIsDark(next);
+    };
+
+    // Persist locally
+    useEffect(() => {
+        if (!isFirebaseConfigured) localStorage.setItem('prompt-keep-notes-local', JSON.stringify(notes));
+    }, [notes]);
+
+    // Firebase sync
+    useEffect(() => {
+        if (!isFirebaseConfigured) return;
+        let unsubDb = null;
+        const unsubAuth = auth.onAuthStateChanged(u => {
+            if (u && !u.isAnonymous) {
+                setUser(u); setIsSyncing(true);
+                unsubDb = db.collection('users').doc(u.uid).collection('notes')
+                    .onSnapshot(snap => {
+                        const fetched = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                        fetched.sort((a, b) => (a.order ?? b.timestamp) - (b.order ?? a.timestamp) || b.timestamp - a.timestamp);
+                        setNotes(fetched); setIsSyncing(false);
+                    }, () => setIsSyncing(false));
+            } else {
+                setUser(null); setIsSyncing(false);
+                if (unsubDb) { unsubDb(); unsubDb = null; }
+            }
+        });
+        return () => { unsubAuth(); if (unsubDb) unsubDb(); };
+    }, []);
+
+    // All tags
+    const allTags = useMemo(() => {
+        const set = new Set();
+        notes.forEach(n => n.tags?.forEach(t => set.add(t)));
+        return [...set].sort();
+    }, [notes]);
+
+    // Filtered & sorted notes
+    const filteredNotes = useMemo(() => {
+        let ns = [...notes];
+        if (activeTag) ns = ns.filter(n => n.tags?.includes(activeTag));
+        if (searchQuery.trim()) {
+            const q = searchQuery.toLowerCase();
+            ns = ns.filter(n =>
+                n.title?.toLowerCase().includes(q) ||
+                n.content?.toLowerCase().includes(q) ||
+                n.tags?.some(t => t.includes(q))
+            );
+        }
+        return [
+            ...ns.filter(n => n.pinned).sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
+            ...ns.filter(n => !n.pinned).sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || b.timestamp - a.timestamp)
+        ];
+    }, [notes, activeTag, searchQuery]);
+
+    // CRUD helpers
+    const persist = (id, data) => {
+        if (isFirebaseConfigured && user) {
+            db.collection('users').doc(user.uid).collection('notes').doc(id).set(data).catch(console.error);
+        } else {
+            setNotes(ns => ns.map(n => n.id === id ? { id, ...data } : n));
+        }
+    };
+
+    const saveNew = () => {
+        if (!newTitle.trim() && !newContent.trim()) { setIsComposing(false); setSheetOpen(false); return; }
+        const note = { title: newTitle.trim(), content: newContent.trim(), colorId: newColorId, tags: newTags, pinned: false, timestamp: Date.now(), order: -Date.now() };
+        const id = Date.now().toString();
+        if (isFirebaseConfigured && user) {
+            db.collection('users').doc(user.uid).collection('notes').doc(id).set(note).catch(console.error);
+        } else {
+            setNotes(ns => [{ id, ...note }, ...ns]);
+        }
+        setNewTitle(''); setNewContent(''); setNewColorId('default'); setNewTags([]);
+        setIsComposing(false); setSheetOpen(false); setShowNewPalette(false);
+    };
+
+    const deleteNote = useCallback((id) => {
+        if (isFirebaseConfigured && user) {
+            db.collection('users').doc(user.uid).collection('notes').doc(id).delete();
+        } else {
+            setNotes(ns => ns.filter(n => n.id !== id));
+        }
+        if (activeNote?.id === id) setActiveNote(null);
+    }, [user, activeNote]);
+
+    const togglePin = useCallback((id) => {
+        const note = notes.find(n => n.id === id);
+        if (!note) return;
+        const updated = { ...note, pinned: !note.pinned };
+        persist(id, updated);
+        if (!isFirebaseConfigured || !user) setNotes(ns => ns.map(n => n.id === id ? updated : n));
+    }, [notes, user]);
+
+    const saveEdited = () => {
+        if (!activeNote) return;
+        const { id, ...data } = activeNote;
+        data.timestamp = Date.now();
+        persist(id, data);
+        if (!isFirebaseConfigured || !user) setNotes(ns => ns.map(n => n.id === id ? { id, ...data } : n));
+        setIsEditing(false); setActiveNote(null);
+    };
+
+    // Drag & drop
+    const handleDragStart = (id) => { dragId.current = id; setDragState(s => ({ ...s, dragging: id })); };
+    const handleDragOver = (id) => { dragOverId.current = id; setDragState(s => ({ ...s, over: id })); };
+    const handleDrop = (targetId) => {
+        if (!dragId.current || dragId.current === targetId) { setDragState({ dragging: null, over: null }); return; }
+        const ids = filteredNotes.map(n => n.id);
+        const fromIdx = ids.indexOf(dragId.current);
+        const toIdx = ids.indexOf(targetId);
+        const reordered = [...ids];
+        reordered.splice(fromIdx, 1);
+        reordered.splice(toIdx, 0, dragId.current);
+        const updated = notes.map(n => {
+            const idx = reordered.indexOf(n.id);
+            return idx !== -1 ? { ...n, order: idx } : n;
+        });
+        if (isFirebaseConfigured && user) {
+            updated.forEach(n => persist(n.id, { ...n }));
+        } else {
+            setNotes(updated);
+        }
+        dragId.current = null; dragOverId.current = null;
+        setDragState({ dragging: null, over: null });
+    };
+
+    // Google login
+    const googleLogin = async () => {
+        try { await auth.signInWithPopup(new firebase.auth.GoogleAuthProvider()); } catch(e) {}
+    };
+    const logout = async () => { await auth.signOut(); setNotes([]); };
+
+    // Compose area bg
+    const composeBg = getBgColor(newColorId, isDark);
+
+    return (
+        <div className="min-h-screen">
+            {/* ── Header ── */}
+            <header className="bg-white/80 dark:bg-gray-900/80 backdrop-blur-md border-b border-gray-200 dark:border-gray-800 sticky top-0 z-30">
+                <div className="max-w-6xl mx-auto px-4 h-14 flex items-center gap-3">
+                    {/* Logo */}
+                    <div className="flex items-center gap-2 mr-2">
+                        <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center shadow-sm">
+                            <Icon name="Bookmark" size={16} className="text-white" />
+                        </div>
+                        <span className="font-extrabold text-base tracking-tight text-gray-900 dark:text-white hidden sm:block">Prompt Keep</span>
+                    </div>
+
+                    {/* Search */}
+                    <div className="flex-1 max-w-xs relative">
+                        <Icon name="Search" size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                        <input
+                            type="text"
+                            placeholder="搜尋筆記…"
+                            value={searchQuery}
+                            onChange={e => setSearchQuery(e.target.value)}
+                            className="w-full pl-8 pr-3 py-1.5 text-sm bg-gray-100 dark:bg-gray-800 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 dark:text-gray-100 placeholder-gray-400 transition-all"
+                        />
+                    </div>
+
+                    <div className="flex items-center gap-2 ml-auto">
+                        <button onClick={toggleDark}
+                            className="p-2 rounded-full text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
+                            <Icon name={isDark ? 'Sun' : 'Moon'} size={18} />
+                        </button>
+
+                        {isFirebaseConfigured && !user && (
+                            <button onClick={googleLogin}
+                                className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors text-gray-700 dark:text-gray-200">
+                                <svg width="14" height="14" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.08 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-3.59-13.46-8.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+                                <span className="hidden sm:inline">登入</span>
+                            </button>
+                        )}
+
+                        {isFirebaseConfigured && user && (
+                            <div className="flex items-center gap-2">
+                                {isSyncing
+                                    ? <span className="text-xs text-blue-500 animate-pulse flex items-center gap-1"><Icon name="Cloud" size={14}/> 同步中</span>
+                                    : <span className="text-xs text-green-600 dark:text-green-400 flex items-center gap-1"><Icon name="Cloud" size={14}/> 已儲存</span>
+                                }
+                                <button onClick={logout} className="p-1.5 rounded-full text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
+                                    <Icon name="LogOut" size={15} />
+                                </button>
+                            </div>
+                        )}
+
+                        {!isFirebaseConfigured && (
+                            <span className="text-xs text-orange-500 flex items-center gap-1">
+                                <Icon name="HardDrive" size={14}/> 本機
+                            </span>
+                        )}
+                    </div>
+                </div>
+            </header>
+
+            <main className="max-w-6xl mx-auto px-4 py-6">
+                {/* ── Tag Filter Bar ── */}
+                {allTags.length > 0 && (
+                    <div className="flex gap-2 flex-wrap mb-6">
+                        <button
+                            onClick={() => setActiveTag(null)}
+                            className={`tag-pill border transition-colors ${!activeTag ? 'bg-gray-900 dark:bg-white text-white dark:text-gray-900 border-transparent' : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-700 hover:border-gray-400'}`}>
+                            全部
+                        </button>
+                        {allTags.map(tag => (
+                            <button key={tag} onClick={() => setActiveTag(activeTag === tag ? null : tag)}
+                                className={`tag-pill border transition-all ${activeTag === tag ? 'ring-2 ring-blue-500 ring-offset-1 dark:ring-offset-gray-950' : 'opacity-80 hover:opacity-100'}`}
+                                style={getTagColor(tag, isDark)}>
+                                #{tag}
+                            </button>
+                        ))}
+                    </div>
+                )}
+
+                {/* ── Compose (Desktop) ── */}
+                <div className="max-w-xl mx-auto mb-8 hidden sm:block">
+                    <div
+                        className="compose-box rounded-2xl border border-gray-200 dark:border-gray-700 transition-all duration-200 overflow-hidden"
+                        style={{ backgroundColor: composeBg }}>
+                        {!isComposing ? (
+                            <div className="px-5 py-3.5 flex items-center cursor-text text-gray-400 dark:text-gray-500"
+                                 onClick={() => { setIsComposing(true); setTimeout(() => textareaRef.current?.focus(), 50); }}>
+                                <span className="text-sm font-medium">新增筆記…</span>
+                                <span className="ml-auto text-xs font-mono bg-black/5 dark:bg-white/10 px-2 py-0.5 rounded">```</span>
+                            </div>
+                        ) : (
+                            <div className="p-4 animate-slide-up">
+                                <input type="text" placeholder="標題" value={newTitle} onChange={e => setNewTitle(e.target.value)}
+                                    className="w-full bg-transparent outline-none font-bold text-base mb-2 text-gray-900 dark:text-gray-100 placeholder-gray-400" />
+                                <textarea ref={textareaRef} placeholder={'內容（用 ``` 包覆程式碼）'} value={newContent}
+                                    onChange={e => { setNewContent(e.target.value); e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px'; }}
+                                    className="w-full bg-transparent outline-none resize-none min-h-[80px] text-sm leading-relaxed text-gray-800 dark:text-gray-200 placeholder-gray-400" />
+                                <div className="mt-3">
+                                    <TagInput tags={newTags} onChange={setNewTags} isDark={isDark} allTags={allTags} />
+                                </div>
+                                <div className="flex justify-between items-center mt-3 pt-2 border-t border-black/5 dark:border-white/5 relative">
+                                    <div className="flex gap-1">
+                                        <button onClick={() => setShowNewPalette(!showNewPalette)}
+                                            className="p-1.5 rounded-full hover:bg-black/8 dark:hover:bg-white/10 text-gray-500 transition-colors">
+                                            <Icon name="Palette" size={16} />
+                                        </button>
+                                        {showNewPalette && (
+                                            <div className="absolute bottom-full left-0 mb-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-xl z-20 p-1">
+                                                <ColorPalette selected={newColorId} onChange={id => { setNewColorId(id); setShowNewPalette(false); }} isDark={isDark} />
+                                            </div>
+                                        )}
+                                    </div>
+                                    <div className="flex gap-2">
+                                        <button onClick={() => { setIsComposing(false); setNewTitle(''); setNewContent(''); setNewTags([]); }}
+                                            className="px-3 py-1 text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 transition-colors">取消</button>
+                                        <button onClick={saveNew}
+                                            className="px-4 py-1 bg-gray-900 dark:bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-gray-700 dark:hover:bg-blue-500 transition-colors shadow-sm">
+                                            儲存
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                {/* ── Notes Grid ── */}
+                {filteredNotes.length === 0 ? (
+                    <div className="text-center py-20 text-gray-400 dark:text-gray-600">
+                        <Icon name="NotepadText" size={48} className="mx-auto mb-4 opacity-30" />
+                        <p className="font-medium">{searchQuery || activeTag ? '找不到符合的筆記' : '還沒有筆記，新增一個吧！'}</p>
+                    </div>
+                ) : (
+                    <div className="columns-1 sm:columns-2 lg:columns-3 xl:columns-4 gap-4">
+                        {filteredNotes.map(note => (
+                            <NoteCard key={note.id} note={note} isDark={isDark}
+                                onOpen={n => { setActiveNote({ ...n }); setIsEditing(false); setShowModalPalette(false); }}
+                                onDelete={deleteNote} onTogglePin={togglePin}
+                                onDragStart={handleDragStart} onDragOver={handleDragOver} onDrop={handleDrop}
+                                isDragging={dragState.dragging === note.id}
+                                isDragOver={dragState.over === note.id}
+                            />
+                        ))}
+                    </div>
+                )}
+            </main>
+
+            {/* ── Mobile FAB ── */}
+            <button
+                onClick={() => setSheetOpen(true)}
+                className="sm:hidden fixed bottom-6 right-6 w-14 h-14 bg-blue-600 hover:bg-blue-500 text-white rounded-full shadow-lg flex items-center justify-center transition-transform active:scale-95 z-40">
+                <Icon name="Plus" size={24} />
+            </button>
+
+            {/* ── Mobile Bottom Sheet ── */}
+            <div className={`sm:hidden bottom-sheet ${sheetOpen ? 'open' : ''}`} style={{ maxHeight: '90vh' }}>
+                <div className="flex justify-between items-center px-5 pt-4 pb-3 border-b border-gray-100 dark:border-gray-800">
+                    <span className="font-bold text-base text-gray-900 dark:text-gray-100">新增筆記</span>
+                    <button onClick={() => setSheetOpen(false)} className="p-1.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500">
+                        <Icon name="X" size={18} />
+                    </button>
+                </div>
+                <div className="overflow-y-auto p-4" style={{ backgroundColor: composeBg }}>
+                    <input type="text" placeholder="標題" value={newTitle} onChange={e => setNewTitle(e.target.value)}
+                        className="w-full bg-transparent outline-none font-bold text-base mb-2 text-gray-900 dark:text-gray-100 placeholder-gray-400" />
+                    <textarea placeholder={'內容（用 ``` 包覆程式碼）'} value={newContent} rows={5}
+                        onChange={e => setNewContent(e.target.value)}
+                        className="w-full bg-transparent outline-none resize-none text-sm leading-relaxed text-gray-800 dark:text-gray-200 placeholder-gray-400" />
+                    <div className="mt-2">
+                        <TagInput tags={newTags} onChange={setNewTags} isDark={isDark} allTags={allTags} />
+                    </div>
+                    <div className="mt-3">
+                        <ColorPalette selected={newColorId} onChange={setNewColorId} isDark={isDark} />
+                    </div>
+                    <button onClick={saveNew}
+                        className="w-full mt-3 py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl transition-colors">
+                        儲存筆記
+                    </button>
+                </div>
+            </div>
+            {sheetOpen && <div className="sm:hidden fixed inset-0 bg-black/40 z-50" onClick={() => setSheetOpen(false)} />}
+            {sheetOpen && <div className="sm:hidden bottom-sheet open z-[60]" style={{ maxHeight: '90vh' }}>
+                <div className="flex justify-between items-center px-5 pt-4 pb-3 border-b border-gray-100 dark:border-gray-800">
+                    <span className="font-bold text-base text-gray-900 dark:text-gray-100">新增筆記</span>
+                    <button onClick={() => setSheetOpen(false)} className="p-1.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500">
+                        <Icon name="X" size={18} />
+                    </button>
+                </div>
+                <div className="overflow-y-auto p-4" style={{ backgroundColor: composeBg }}>
+                    <input type="text" placeholder="標題" value={newTitle} onChange={e => setNewTitle(e.target.value)}
+                        className="w-full bg-transparent outline-none font-bold text-base mb-2 text-gray-900 dark:text-gray-100 placeholder-gray-400" />
+                    <textarea placeholder={'內容（用 ``` 包覆程式碼）'} value={newContent} rows={5}
+                        onChange={e => setNewContent(e.target.value)}
+                        className="w-full bg-transparent outline-none resize-none text-sm leading-relaxed text-gray-800 dark:text-gray-200 placeholder-gray-400" />
+                    <div className="mt-2">
+                        <TagInput tags={newTags} onChange={setNewTags} isDark={isDark} allTags={allTags} />
+                    </div>
+                    <div className="mt-3">
+                        <ColorPalette selected={newColorId} onChange={setNewColorId} isDark={isDark} />
+                    </div>
+                    <button onClick={saveNew}
+                        className="w-full mt-3 py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl transition-colors">
+                        儲存筆記
+                    </button>
+                </div>
+            </div>}
+
+            {/* ── Note Modal ── */}
+            {activeNote && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 animate-fade-in">
+                    <div className="w-full sm:max-w-2xl sm:rounded-2xl rounded-t-2xl shadow-2xl flex flex-col max-h-[95vh] sm:max-h-[88vh] border border-black/5 dark:border-white/5 overflow-hidden transition-colors"
+                         style={{ backgroundColor: getBgColor(activeNote.colorId || 'default', isDark) }}>
+                        {/* Modal Header */}
+                        <div className="flex items-center justify-between px-5 py-3 border-b border-black/5 dark:border-white/5">
+                            <div className="flex items-center gap-2">
+                                <button onClick={() => { const u = { ...activeNote, pinned: !activeNote.pinned }; setActiveNote(u); togglePin(activeNote.id); }}
+                                    className={`p-1.5 rounded-full transition-colors ${activeNote.pinned ? 'text-amber-500' : 'text-gray-400 hover:text-amber-500'}`}>
+                                    <Icon name="Pin" size={16} className={activeNote.pinned ? 'pin-icon pinned' : 'pin-icon'} />
+                                </button>
+                                {!isEditing && (
+                                    <button onClick={() => setIsEditing(true)}
+                                        className="p-1.5 rounded-full text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors">
+                                        <Icon name="Pencil" size={16} />
+                                    </button>
+                                )}
+                                <div className="relative">
+                                    <button onClick={() => setShowModalPalette(!showModalPalette)}
+                                        className="p-1.5 rounded-full text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors">
+                                        <Icon name="Palette" size={16} />
+                                    </button>
+                                    {showModalPalette && (
+                                        <div className="absolute top-full left-0 mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl shadow-xl z-20 p-1">
+                                            <ColorPalette selected={activeNote.colorId || 'default'}
+                                                onChange={id => { setActiveNote(n => ({ ...n, colorId: id })); setShowModalPalette(false); }} isDark={isDark} />
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                            <button onClick={() => { setActiveNote(null); setIsEditing(false); setShowModalPalette(false); }}
+                                className="p-1.5 rounded-full text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-black/5 dark:hover:bg-white/10 transition-colors">
+                                <Icon name="X" size={18} />
+                            </button>
+                        </div>
+
+                        {/* Modal Body */}
+                        <div className="flex-1 overflow-y-auto px-5 py-4">
+                            {isEditing ? (
+                                <>
+                                    <input type="text" value={activeNote.title || ''}
+                                        onChange={e => setActiveNote(n => ({ ...n, title: e.target.value }))}
+                                        placeholder="標題"
+                                        className="w-full bg-transparent outline-none font-bold text-xl mb-3 text-gray-900 dark:text-gray-100 border-b border-black/10 dark:border-white/10 pb-2 placeholder-gray-400" />
+                                    <div className="mb-3">
+                                        <TagInput tags={activeNote.tags || []} onChange={t => setActiveNote(n => ({ ...n, tags: t }))} isDark={isDark} allTags={allTags} />
+                                    </div>
+                                    <textarea value={activeNote.content || ''} onChange={e => setActiveNote(n => ({ ...n, content: e.target.value }))}
+                                        className="w-full bg-transparent outline-none resize-none min-h-72 leading-relaxed text-gray-800 dark:text-gray-200 text-sm" />
+                                </>
+                            ) : (
+                                <>
+                                    {activeNote.title && <h2 className="font-bold text-xl mb-3 text-gray-900 dark:text-gray-100">{activeNote.title}</h2>}
+                                    {activeNote.tags?.length > 0 && (
+                                        <div className="flex flex-wrap gap-1.5 mb-4">
+                                            {activeNote.tags.map(t => <span key={t} className="tag-pill" style={getTagColor(t, isDark)}>#{t}</span>)}
+                                        </div>
+                                    )}
+                                    <div className="text-sm leading-relaxed text-gray-800 dark:text-gray-200">{parseContent(activeNote.content, false)}</div>
+                                </>
+                            )}
+                        </div>
+
+                        {/* Modal Footer */}
+                        {isEditing && (
+                            <div className="px-5 py-3 border-t border-black/5 dark:border-white/5 flex justify-end gap-2">
+                                <button onClick={() => setIsEditing(false)}
+                                    className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 transition-colors">取消</button>
+                                <button onClick={saveEdited}
+                                    className="px-5 py-2 bg-gray-900 dark:bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-gray-700 dark:hover:bg-blue-500 transition-colors shadow-sm">
+                                    儲存變更
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
