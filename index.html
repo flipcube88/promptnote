@@ -15,7 +15,10 @@
 
     <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-    <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+    
+    <!-- 【修復重點】將 babel-standalone@6 升級為 @babel/standalone (Babel 7) -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
     <script src="https://cdn.tailwindcss.com"></script>
     <script>tailwind.config = { darkMode: 'class' };</script>
     <script src="https://unpkg.com/lucide@latest"></script>
@@ -163,8 +166,10 @@ const Icon = React.memo(({ name, size = 20, className = '' }) => {
         svg.setAttribute('stroke-linecap', 'round');
         svg.setAttribute('stroke-linejoin', 'round');
         if (className) svg.setAttribute('class', className);
-        const [defaultAttrs, children] = lucide.icons[name];
-        children.forEach(([tag, attrs]) => {
+        
+        // 修復：正確遍歷 Lucide 陣列節點，不使用錯誤的解構方式
+        const iconNode = lucide.icons[name];
+        iconNode.forEach(([tag, attrs]) => {
             const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
             Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
             svg.appendChild(el);
@@ -779,7 +784,7 @@ const App = () => {
                                         <TagInput tags={activeNote.tags || []} onChange={t => setActiveNote(n => ({ ...n, tags: t }))} isDark={isDark} allTags={allTags} />
                                     </div>
                                     <textarea value={activeNote.content || ''} onChange={e => setActiveNote(n => ({ ...n, content: e.target.value }))}
-                                        className="w-full bg-transparent outline-none resize-none min-h-72 leading-relaxed text-gray-800 dark:text-gray-200 text-sm" />
+                                        className="w-full bg-transparent outline-none resize-none min-h-[280px] leading-relaxed text-gray-800 dark:text-gray-200 text-sm" />
                                 </>
                             ) : (
                                 <>
